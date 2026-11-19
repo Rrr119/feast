@@ -84,19 +84,19 @@ def pull_latest_from_table_or_query_ibis(
     end_date = end_date.astimezone(tz=timezone.utc).replace(tzinfo=None)
 
     table = data_source_reader(data_source, str(config.repo_path))
+    table = _filter_to_time_range(
+        table=table,
+        timestamp_field=timestamp_field,
+        start_date=start_date,
+        end_date=end_date,
+        date_partition_column=data_source.date_partition_column,
+    )
 
     table = table.select(*fields)
 
     # TODO get rid of this fix
     if "__log_date" in table.columns:
         table = table.drop("__log_date")
-
-    table = table.filter(
-        ibis.and_(
-            _comparable_timestamp(table[timestamp_field]) >= ibis.literal(start_date),
-            _comparable_timestamp(table[timestamp_field]) <= ibis.literal(end_date),
-        )
-    )
 
     table = deduplicate(
         table=table,
@@ -128,6 +128,94 @@ def _comparable_timestamp(column):
         return column.cast(dt.Timestamp(timezone="UTC"))
     timezone = getattr(column_type, "timezone", None)
     return column.cast(dt.Timestamp(timezone=timezone) if timezone else "timestamp")
+
+
+def _date_partition_literal(column, value: datetime):
+    """Build a literal that matches the physical type of a partition column."""
+    column_type = column.type()
+    if column_type.is_string():
+        return ibis.literal(value.strftime("%Y-%m-%d"))
+    if column_type.is_date():
+        return ibis.literal(value.date())
+    if column_type.is_timestamp():
+        return ibis.literal(datetime.combine(value.date(), datetime.min.time()))
+    return ibis.literal(value.date().isoformat())
+
+
+def _filter_to_time_range(
+    table: Table,
+    timestamp_field: str,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    date_partition_column: Optional[str] = None,
+) -> Table:
+    """Push a time window into the source expression.
+
+    The predicate is expressed directly on the table returned by the data
+    source reader so SQL and file-based backends can prune files/partitions
+    before the point-in-time join runs.
+    """
+    if timestamp_field and timestamp_field in table.columns:
+        comparable_timestamp = _comparable_timestamp(table[timestamp_field])
+        if start_date is not None:
+            table = table.filter(comparable_timestamp >= ibis.literal(start_date))
+        if end_date is not None:
+            table = table.filter(comparable_timestamp <= ibis.literal(end_date))
+
+    if (
+        date_partition_column
+        and date_partition_column != timestamp_field
+        and date_partition_column in table.columns
+    ):
+        partition_column = table[date_partition_column]
+        if start_date is not None:
+            table = table.filter(
+                partition_column
+                >= _date_partition_literal(partition_column, start_date)
+            )
+        if end_date is not None:
+            table = table.filter(
+                partition_column <= _date_partition_literal(partition_column, end_date)
+            )
+
+    return table
+
+
+def _filter_source_for_feature_view(
+    table: Table,
+    feature_view: FeatureView,
+    entity_df_timestamp_range: Tuple[datetime, datetime],
+    filter_by_created_timestamp: bool,
+) -> Table:
+    """Prune a feature view's source to the window its join can possibly use."""
+    batch_source = feature_view.batch_source
+    if batch_source is None:
+        return table
+
+    min_event_timestamp, max_event_timestamp = (
+        offline_utils.get_feature_view_event_timestamp_bounds(
+            feature_view, entity_df_timestamp_range
+        )
+    )
+    table = _filter_to_time_range(
+        table=table,
+        timestamp_field=batch_source.timestamp_field,
+        start_date=min_event_timestamp,
+        end_date=max_event_timestamp,
+        date_partition_column=batch_source.date_partition_column,
+    )
+
+    if (
+        filter_by_created_timestamp
+        and batch_source.created_timestamp_column
+        and batch_source.created_timestamp_column in table.columns
+    ):
+        table = table.filter(
+            _comparable_timestamp(table[batch_source.created_timestamp_column])
+            <= ibis.literal(max_event_timestamp)
+        )
+
+    return table
 
 
 def _get_entity_df_event_timestamp_range(
@@ -249,6 +337,12 @@ def get_historical_features_ibis(
         fv_table: Table = data_source_reader(
             feature_view.batch_source, str(config.repo_path)
         )
+        fv_table = _filter_source_for_feature_view(
+            table=fv_table,
+            feature_view=feature_view,
+            entity_df_timestamp_range=timestamp_range,
+            filter_by_created_timestamp=filter_by_created_timestamp,
+        )
 
         for old_name, new_name in feature_view.batch_source.field_mapping.items():
             if old_name in fv_table.columns:
@@ -357,23 +451,19 @@ def pull_all_from_table_or_query_ibis(
         end_date = end_date.astimezone(tz=timezone.utc).replace(tzinfo=None)
 
     table = data_source_reader(data_source, str(config.repo_path))
+    table = _filter_to_time_range(
+        table=table,
+        timestamp_field=timestamp_field,
+        start_date=start_date,
+        end_date=end_date,
+        date_partition_column=data_source.date_partition_column,
+    )
 
     table = table.select(*fields)
 
     # TODO get rid of this fix
     if "__log_date" in table.columns:
         table = table.drop("__log_date")
-
-    table = table.filter(
-        ibis.and_(
-            _comparable_timestamp(table[timestamp_field]) >= ibis.literal(start_date)
-            if start_date
-            else ibis.literal(True),
-            _comparable_timestamp(table[timestamp_field]) <= ibis.literal(end_date)
-            if end_date
-            else ibis.literal(True),
-        )
-    )
 
     return IbisRetrievalJob(
         table=table,

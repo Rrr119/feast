@@ -84,6 +84,28 @@ def get_entity_df_timestamp_bounds(
     return event_timestamp_series.min(), event_timestamp_series.max()
 
 
+def get_feature_view_event_timestamp_bounds(
+    feature_view: FeatureView,
+    entity_df_timestamp_range: Tuple[datetime, datetime],
+) -> Tuple[Optional[datetime], datetime]:
+    """Return the inclusive source-event bounds needed for a feature view.
+
+    Point-in-time retrieval never needs feature rows after the latest entity
+    timestamp. When the feature view has a TTL, rows older than the earliest
+    entity timestamp minus that TTL cannot be joined either. Keeping these
+    bounds in one place ensures source pruning and the join use identical
+    semantics.
+    """
+    max_event_timestamp = to_naive_utc(entity_df_timestamp_range[1])
+    min_event_timestamp = None
+    if isinstance(feature_view.ttl, timedelta) and feature_view.ttl:
+        min_event_timestamp = to_naive_utc(
+            entity_df_timestamp_range[0] - feature_view.ttl
+        )
+
+    return min_event_timestamp, max_event_timestamp
+
+
 @dataclass(frozen=True)
 class FeatureViewQueryContext:
     """Context object used to template a BigQuery and Redshift point-in-time SQL query"""
@@ -171,12 +193,17 @@ def get_feature_view_query_context(
             feature_view.batch_source, "timestamp_field_type", ""
         )
 
-        max_event_timestamp = to_naive_utc(entity_df_timestamp_range[1]).isoformat()
-        min_event_timestamp = None
-        if feature_view.ttl:
-            min_event_timestamp = to_naive_utc(
-                entity_df_timestamp_range[0] - feature_view.ttl
-            ).isoformat()
+        min_event_timestamp_dt, max_event_timestamp_dt = (
+            get_feature_view_event_timestamp_bounds(
+                feature_view, entity_df_timestamp_range
+            )
+        )
+        max_event_timestamp = max_event_timestamp_dt.isoformat()
+        min_event_timestamp = (
+            min_event_timestamp_dt.isoformat()
+            if min_event_timestamp_dt is not None
+            else None
+        )
 
         context = FeatureViewQueryContext(
             name=feature_view.projection.name_to_use(),

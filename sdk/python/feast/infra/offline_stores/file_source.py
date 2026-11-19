@@ -44,6 +44,7 @@ class FileSource(DataSource):
         event_timestamp_column: Optional[str] = "",
         file_format: Optional[FileFormat] = None,
         created_timestamp_column: Optional[str] = "",
+        date_partition_column: Optional[str] = None,
         field_mapping: Optional[Dict[str, str]] = None,
         s3_endpoint_override: Optional[str] = None,
         description: Optional[str] = "",
@@ -62,6 +63,8 @@ class FileSource(DataSource):
             event_timestamp_column (optional): (Deprecated in favor of timestamp_field) Event
                 timestamp column used for point in time joins of feature values.
             created_timestamp_column (optional): Timestamp column when row was created, used for deduplicating rows.
+            date_partition_column (optional): Date partition column used to prune
+                partitions and limit the data scanned during historical retrieval.
             file_format (optional): Explicitly set the file format. Allows Feast to bypass inferring the file format.
             field_mapping: A dictionary mapping of column names in this data source to feature names in a feature table
                 or view. Only used for feature columns, not entities or timestamp columns.
@@ -89,6 +92,7 @@ class FileSource(DataSource):
             name=name if name else path,
             timestamp_field=timestamp_field,
             created_timestamp_column=created_timestamp_column,
+            date_partition_column=date_partition_column,
             field_mapping=field_mapping,
             description=description,
             tags=tags,
@@ -137,6 +141,7 @@ class FileSource(DataSource):
             path=data_source.file_options.uri,
             timestamp_field=data_source.timestamp_field,
             created_timestamp_column=data_source.created_timestamp_column,
+            date_partition_column=data_source.date_partition_column,
             s3_endpoint_override=data_source.file_options.s3_endpoint_override,
             description=data_source.description,
             tags=tags,
@@ -157,6 +162,7 @@ class FileSource(DataSource):
 
         data_source_proto.timestamp_field = self.timestamp_field
         data_source_proto.created_timestamp_column = self.created_timestamp_column
+        data_source_proto.date_partition_column = self.date_partition_column
 
         return data_source_proto
 

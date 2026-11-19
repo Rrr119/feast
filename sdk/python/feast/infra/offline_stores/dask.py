@@ -35,6 +35,7 @@ from feast.infra.offline_stores.offline_store import (
 )
 from feast.infra.offline_stores.offline_utils import (
     DEFAULT_ENTITY_DF_EVENT_TIMESTAMP_COL,
+    get_feature_view_event_timestamp_bounds,
     get_pyarrow_schema_from_batch_source,
 )
 from feast.infra.registry.base_registry import BaseRegistry
@@ -286,8 +287,19 @@ class DaskOfflineStore(OfflineStore):
 
                 all_join_keys = list(set(all_join_keys + join_keys))
 
+                min_event_timestamp, max_event_timestamp = (
+                    get_feature_view_event_timestamp_bounds(
+                        feature_view, entity_df_event_timestamp_range
+                    )
+                )
                 df_to_join = _read_datasource(
-                    feature_view.batch_source, config.repo_path
+                    feature_view.batch_source,
+                    config.repo_path,
+                    filters=_time_range_filters(
+                        feature_view.batch_source,
+                        min_event_timestamp,
+                        max_event_timestamp,
+                    ),
                 )
 
                 df_to_join, timestamp_field = _field_mapping(
@@ -466,7 +478,11 @@ class DaskOfflineStore(OfflineStore):
         end_date: Optional[datetime] = None,
     ) -> dd.DataFrame:
         # Create lazy function that is only called from the RetrievalJob object
-        source_df = _read_datasource(data_source, config.repo_path)
+        source_df = _read_datasource(
+            data_source,
+            config.repo_path,
+            filters=_time_range_filters(data_source, start_date, end_date),
+        )
 
         # Validate join keys against source columns BEFORE calling _normalize_timestamp.
         # _normalize_timestamp ends with df.persist() which initialises Dask's global
@@ -1038,7 +1054,34 @@ def _get_entity_df_event_timestamp_range(
     )
 
 
-def _read_datasource(data_source, repo_path) -> dd.DataFrame:
+def _time_range_filters(
+    data_source: DataSource,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+) -> Optional[List[Tuple[str, str, Any]]]:
+    """Build read filters for date partitions.
+
+    The event timestamp itself is filtered after the source is normalized.
+    Applying it here as well would require matching the Parquet file's exact
+    timestamp precision, which varies between writers.
+    """
+    filters: List[Tuple[str, str, Any]] = []
+    timestamp_field = data_source.timestamp_field
+    date_partition_column = data_source.date_partition_column
+    if date_partition_column and date_partition_column != timestamp_field:
+        if start_date is not None:
+            filters.append(
+                (date_partition_column, ">=", start_date.strftime("%Y-%m-%d"))
+            )
+        if end_date is not None:
+            filters.append((date_partition_column, "<=", end_date.strftime("%Y-%m-%d")))
+
+    return filters or None
+
+
+def _read_datasource(
+    data_source, repo_path, filters: Optional[List[Tuple[str, str, Any]]] = None
+) -> dd.DataFrame:
     storage_options: Optional[dict] = None
     resolved_creds = data_source.resolve_credentials()
 
@@ -1067,6 +1110,7 @@ def _read_datasource(data_source, repo_path) -> dd.DataFrame:
 
     return dd.read_parquet(
         path,
+        filters=filters,
         storage_options=storage_options,
     )
 

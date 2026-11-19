@@ -1,0 +1,17 @@
+{
+  "root": "/home/dev/feedback/uid26929",
+  "B": "/home/dev/feedback/uid26929",
+  "sha": "a73c07a90df4458220045e9ea2c1f4d57d11516a",
+  "wslDistro": "Ubuntu-26.04",
+  "source": {
+    "owner": "feast-dev",
+    "repo": "feast",
+    "sha": "a73c07a90df4458220045e9ea2c1f4d57d11516a"
+  },
+  "fork": {
+    "owner": "Rrr119",
+    "repo": "feast",
+    "cloneUrl": "https://github.com/Rrr119/feast.git"
+  },
+  "at": "2026-11-19T16:04:25.604Z"
+}
